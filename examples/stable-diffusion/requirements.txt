@@ -1,0 +1,6 @@
+opencv-python == 4.10.0.84
+compel == 2.3.1
+sentencepiece
+peft == 0.17.0
+ftfy
+

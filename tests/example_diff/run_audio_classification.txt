@@ -1,0 +1,145 @@
+1a2
+> # coding=utf-8
+19d19
+< import warnings
+27,28d26
+< from datasets import DatasetDict, load_dataset
+< 
+30,38c28,29
+< from transformers import (
+<     AutoConfig,
+<     AutoFeatureExtractor,
+<     AutoModelForAudioClassification,
+<     HfArgumentParser,
+<     Trainer,
+<     TrainingArguments,
+<     set_seed,
+< )
+---
+> from datasets import DatasetDict, load_dataset
+> from transformers import AutoConfig, AutoFeatureExtractor, AutoModelForAudioClassification, HfArgumentParser
+42a34,44
+> from optimum.habana import GaudiConfig, GaudiTrainer, GaudiTrainingArguments
+> from optimum.habana.utils import set_seed
+> 
+> 
+> try:
+>     from optimum.habana.utils import check_optimum_habana_min_version
+> except ImportError:
+> 
+>     def check_optimum_habana_min_version(*a, **b):
+>         return ()
+> 
+46,47c48,50
+< # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
+< check_min_version("4.52.0.dev0")
+---
+> # Will error if the minimal version of Transformers and Optimum Habana are not installed. Remove at your own risks.
+> check_min_version("4.51.0")
+> check_optimum_habana_min_version("1.21.0")
+173,175d175
+<     freeze_feature_extractor: Optional[bool] = field(
+<         default=None, metadata={"help": "Whether to freeze the feature extractor layers of the model."}
+<     )
+179a180,196
+>     use_flash_attention: bool = field(
+>         default=False, metadata={"help": "Whether to use Habana flash attention for fine-tuning"}
+>     )
+>     flash_attention_recompute: bool = field(
+>         default=False,
+>         metadata={
+>             "help": "Whether to enable recompute in Habana flash attention for fine-tuning."
+>             " It is applicable only when use_flash_attention is True."
+>         },
+>     )
+>     flash_attention_fast_softmax: bool = field(
+>         default=False,
+>         metadata={
+>             "help": "Whether to use fast softmax for Habana flash attention."
+>             " It is applicable only when use_flash_attention is True."
+>         },
+>     )
+182,194c199,206
+<         if not self.freeze_feature_extractor and self.freeze_feature_encoder:
+<             warnings.warn(
+<                 "The argument `--freeze_feature_extractor` is deprecated and "
+<                 "will be removed in a future version. Use `--freeze_feature_encoder` "
+<                 "instead. Setting `freeze_feature_encoder==True`.",
+<                 FutureWarning,
+<             )
+<         if self.freeze_feature_extractor and not self.freeze_feature_encoder:
+<             raise ValueError(
+<                 "The argument `--freeze_feature_extractor` is deprecated and "
+<                 "should not be used in combination with `--freeze_feature_encoder`. "
+<                 "Only make use of `--freeze_feature_encoder`."
+<             )
+---
+>         if self.use_flash_attention:
+>             os.environ["USE_FLASH_ATTENTION"] = "1"
+>         if self.flash_attention_recompute:
+>             assert self.use_flash_attention, "flash_attention_recompute is set, but use_flash_attention is not"
+>             os.environ["FLASH_ATTENTION_RECOMPUTE"] = "1"
+>         if self.flash_attention_fast_softmax:
+>             assert self.use_flash_attention, "flash_attention_fast_softmax is set, but use_flash_attention is not"
+>             os.environ["FLASH_ATTENTION_FAST_SOFTMAX"] = "1"
+202c214
+<     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+---
+>     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, GaudiTrainingArguments))
+230a243,249
+>     gaudi_config = GaudiConfig.from_pretrained(
+>         training_args.gaudi_config_name,
+>         cache_dir=model_args.cache_dir,
+>         revision=model_args.model_revision,
+>         token=model_args.token,
+>     )
+> 
+231a251
+>     mixed_precision = training_args.bf16 or gaudi_config.use_torch_autocast
+233,234c253,255
+<         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
+<         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
+---
+>         f"Process rank: {training_args.local_rank}, device: {training_args.device}, "
+>         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, "
+>         + f"mixed-precision training: {mixed_precision}"
+303a325,327
+>     # Max input length
+>     max_length = int(round(feature_extractor.sampling_rate * data_args.max_length_seconds))
+> 
+308a333
+> 
+314c339,345
+<         inputs = feature_extractor(subsampled_wavs, sampling_rate=feature_extractor.sampling_rate)
+---
+>         inputs = feature_extractor(
+>             subsampled_wavs,
+>             max_length=max_length,
+>             sampling_rate=feature_extractor.sampling_rate,
+>             padding="max_length",
+>             truncation=True,
+>         )
+323c354,360
+<         inputs = feature_extractor(wavs, sampling_rate=feature_extractor.sampling_rate)
+---
+>         inputs = feature_extractor(
+>             wavs,
+>             max_length=max_length,
+>             sampling_rate=feature_extractor.sampling_rate,
+>             padding="max_length",
+>             truncation=True,
+>         )
+356a394
+>         attn_implementation=training_args.attn_implementation,
+369,370c407,408
+<     # freeze the convolutional waveform encoder
+<     if model_args.freeze_feature_encoder:
+---
+>     # freeze the convolutional waveform encoder if supported by model
+>     if hasattr(model, "freeze_feature_encoder") and model_args.freeze_feature_encoder:
+390c428
+<     trainer = Trainer(
+---
+>     trainer = GaudiTrainer(
+391a430
+>         gaudi_config=gaudi_config,
